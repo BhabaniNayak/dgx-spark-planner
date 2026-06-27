@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DGX Spark LLM Lifecycle Planner</title>
+<meta name="description" content="Plan pre-training, fine-tuning, RL alignment and inference of LLMs on a single NVIDIA DGX Spark (GB10). Find the practical sweet spot for tokens, days, memory and tokens/sec.">
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#131823; --panel2:#1a2030; --line:#262d3d; --line2:#323b50;
+    --txt:#e6e9f0; --muted:#8b94a7; --accent:#76b900; --accent2:#3da5ff; --violet:#b06bff;
+    --warn:#f0b429; --bad:#ef5350; --good:#76b900;
+    --chip:#222a3a; --radius:12px;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);font-size:15px;line-height:1.5}
+  a{color:var(--accent2);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1280px;margin:0 auto;padding:24px 18px 90px}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+  header h1{font-size:24px;margin:0 0 4px;letter-spacing:-.3px}
+  header h1 b{color:var(--accent)}
+  header p{color:var(--muted);margin:0 0 18px;max-width:720px}
+  .ghbtn{background:var(--chip);border:1px solid var(--line);color:var(--txt);padding:7px 12px;border-radius:8px;font-size:13px;white-space:nowrap}
+  .grid{display:grid;grid-template-columns:320px 1fr;gap:18px;align-items:start}
+  @media(max-width:880px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 14px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+  label{display:block;font-size:12.5px;color:var(--muted);margin:12px 0 5px}
+  label:first-of-type{margin-top:0}
+  input[type=number],select{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    padding:8px 10px;border-radius:8px;font-family:var(--mono);font-size:14px;outline:none}
+  input[type=number]:focus,select:focus{border-color:var(--accent2)}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .row{display:flex;gap:10px}
+  .row>div{flex:1;min-width:0}
+  .tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
+  .tab{background:var(--chip);border:1px solid var(--line);color:var(--muted);padding:8px 13px;border-radius:999px;
+    cursor:pointer;font-size:13px;font-weight:500;user-select:none;transition:.12s}
+  .tab:hover{color:var(--txt)}
+  .tab.active{background:var(--accent);color:#0b0e14;border-color:var(--accent);font-weight:600}
+  .hint{font-size:11.5px;color:var(--muted);margin-top:5px;line-height:1.45}
+  .hwsum{font-family:var(--mono);font-size:12.5px;color:var(--txt);background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;padding:9px 11px;margin-top:10px;line-height:1.7}
+  .hwsum b{color:var(--accent)}
+  details.adv{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+  details.adv>summary{cursor:pointer;color:var(--accent2);font-size:12.5px;font-weight:600;list-style:none}
+  details.adv>summary::-webkit-details-marker{display:none}
+  details.adv>summary::before{content:"▸ ";font-size:10px}
+  details.adv[open]>summary::before{content:"▾ "}
+  .results{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px;margin:4px 0 16px}
+  .metric{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:13px 14px;position:relative}
+  .metric .k{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .metric .v{font-size:23px;font-weight:700;font-family:var(--mono);margin-top:3px;letter-spacing:-.5px}
+  .metric .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .v.good{color:var(--good)} .v.warn{color:var(--warn)} .v.bad{color:var(--bad)}
+  .mathbox{margin-top:9px;font-size:11.8px;color:var(--muted);line-height:1.65;border-top:1px solid var(--line);padding-top:8px}
+  .mathbox code{background:#0b0e14;padding:1px 5px;border-radius:4px;font-family:var(--mono);color:var(--txt);font-size:11.5px}
+  .mathbox .eq{display:block;margin:5px 0;color:var(--txt);font-family:var(--mono);font-size:12px}
+  .verdict{border-radius:10px;padding:13px 15px;font-size:14px;margin-bottom:16px;border:1px solid}
+  .verdict.good{background:rgba(118,185,0,.10);border-color:rgba(118,185,0,.4)}
+  .verdict.warn{background:rgba(240,180,41,.10);border-color:rgba(240,180,41,.4)}
+  .verdict.bad{background:rgba(239,83,80,.10);border-color:rgba(239,83,80,.4)}
+  .verdict b{font-weight:700}
+  .membar{height:26px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;overflow:hidden;display:flex;margin:6px 0 4px}
+  .membar .seg-b{height:100%;display:flex;align-items:center;justify-content:center;font-size:10.5px;color:#0b0e14;font-weight:700;white-space:nowrap;overflow:hidden}
+  .memlegend{display:flex;flex-wrap:wrap;gap:12px;font-size:11.5px;color:var(--muted);margin-top:6px}
+  .memlegend span{display:flex;align-items:center;gap:5px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
+  td.num{font-family:var(--mono);text-align:right}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  .btn{background:var(--accent);color:#0b0e14;border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer}
+  .btn.ghost{background:var(--chip);color:var(--txt);border:1px solid var(--line);font-weight:500}
+  .btn:hover{filter:brightness(1.08)}
+  .toggle{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+  .sweet{background:linear-gradient(135deg,rgba(118,185,0,.08),rgba(61,165,255,.06))}
+  /* output tabs */
+  .outtabs{display:flex;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:4px;margin-bottom:18px}
+  .outtabs button{flex:1;background:none;border:none;color:var(--muted);padding:9px 8px;border-radius:7px;font-size:14px;font-weight:600;cursor:pointer;font-family:var(--sans);display:flex;align-items:center;justify-content:center;gap:6px}
+  .outtabs button.active{background:var(--accent);color:#0b0e14}
+  .tabbadge:empty{display:none}
+  .tabbadge{background:var(--accent2);color:#fff;font-size:11px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;padding:0 5px}
+  .outtabs button.active .tabbadge{background:#0b0e14;color:var(--accent)}
+  /* hero verdict */
+  .verdict.hero{font-size:16px;padding:16px 18px}
+  .resbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:2px 0 16px}
+  .muted-sm{font-size:12px;color:var(--muted)}
+  /* comparison */
+  .cmprow{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px}
+  .cmpcol{flex:0 0 230px;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:12px;position:relative}
+  .cmpcol .lab{font-weight:700;font-size:13px;margin:0 22px 2px 0;line-height:1.3}
+  .cmpcol .sub{font-size:11px;color:var(--muted);margin-bottom:8px}
+  .cmpcol .vtag{font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px;display:inline-block;margin-bottom:10px}
+  .cmpcol .x{position:absolute;top:8px;right:9px;cursor:pointer;color:var(--muted);font-size:15px;line-height:1}
+  .cmpcol .x:hover{color:var(--bad)}
+  .cmpmetric{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-top:1px solid var(--line)}
+  .cmpmetric .ck{color:var(--muted)}
+  .cmpmetric .cv{font-family:var(--mono);font-weight:600;text-align:right}
+  .empty{color:var(--muted);font-size:13px;font-style:italic}
+  details.foot-d{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+  details.foot-d summary{cursor:pointer;color:var(--accent2);font-size:13px;font-weight:600}
+  details.foot-d .body{font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.65}
+  .foot{color:var(--muted);font-size:12px;margin-top:20px;line-height:1.6}
+  .pill{display:inline-block;background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:11px;font-family:var(--mono)}
+  .badge{font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;vertical-align:middle;background:rgba(61,165,255,.15);color:var(--accent2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1><b>DGX Spark</b> LLM Lifecycle Planner</h1>
+      <p>Plan pre-training, fine-tuning, RL alignment and inference on a single GB10 Grace Blackwell desktop. Pick a scenario, read the verdict, expand any number to see the math, and pin configs to compare side by side. Defaults reflect <b>measured</b> GB10 hardware.</p>
+    </div>
+    <a class="ghbtn" href="https://docs.nvidia.com/dgx/dgx-spark/hardware.html" target="_blank" rel="noopener">GB10 specs ↗</a>
+  </header>
+
+  <div class="grid">
+    <!-- LEFT: HARDWARE + SCENARIO -->
+    <div>
+      <div class="card" style="margin-bottom:18px">
+        <h2>1 · Hardware</h2>
+        <label>Machine</label>
+        <select id="preset">
+          <option value="spark">DGX Spark (GB10) — measured</option>
+          <option value="spark_opt">DGX Spark — optimistic</option>
+          <option value="custom">Custom</option>
+        </select>
+        <div class="hwsum" id="hwsum"></div>
+        <details class="adv" id="hwAdv">
+          <summary>Advanced hardware settings</summary>
+          <label>Unified memory (GB)</label>
+          <input type="number" id="mem" value="128" min="1">
+          <label>Memory bandwidth (GB/s)</label>
+          <input type="number" id="bw" value="273">
+          <label>Bandwidth utilization <span id="bwuLab" class="pill">80%</span></label>
+          <input type="range" id="bwu" min="40" max="95" value="80">
+          <label>Peak tensor TFLOPS — BF16/FP16 · FP8 · FP4 · TF32</label>
+          <div class="row">
+            <div><input type="number" id="tf_bf16" value="213" title="BF16/FP16"></div>
+            <div><input type="number" id="tf_fp8" value="213" title="FP8"></div>
+            <div><input type="number" id="tf_fp4" value="427" title="FP4 dense"></div>
+            <div><input type="number" id="tf_tf32" value="53" title="TF32"></div>
+          </div>
+          <div class="hint">Measured on real GB10 (Nov 2025): BF16 = FP8 = ~213, FP4 dense ~427 TFLOPS. FP8 gives no throughput gain over BF16 here.</div>
+          <label>Training efficiency / MFU <span id="mfuLab" class="pill">35%</span></label>
+          <input type="range" id="mfu" min="10" max="60" value="35">
+          <div class="hint">Effective training throughput = peak × MFU. Bandwidth-starved chips rarely exceed 35–45%.</div>
+        </details>
+      </div>
+
+      <div class="card">
+        <h2>2 · Scenario</h2>
+        <div class="tabs" id="actTabs">
+          <div class="tab active" data-act="pretrain">Pre-training</div>
+          <div class="tab" data-act="sft">SFT</div>
+          <div class="tab" data-act="lora">LoRA / QLoRA</div>
+          <div class="tab" data-act="grpo">GRPO / RL</div>
+          <div class="tab" data-act="infer">Inference</div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>Model size (N)</label>
+            <select id="Npreset">
+              <option value="124e6">124M (GPT-2 small)</option>
+              <option value="350e6" selected>350M (GPT-2 medium)</option>
+              <option value="1e9">1B</option>
+              <option value="3e9">3B</option>
+              <option value="7e9">7B</option>
+              <option value="8e9">8B</option>
+              <option value="13e9">13B</option>
+              <option value="32e9">32B</option>
+              <option value="70e9">70B</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div id="NcustomWrap" style="display:none">
+            <label>Custom N (millions)</label>
+            <input type="number" id="Ncustom" value="350">
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:0">
+          <div>
+            <label>Architecture</label>
+            <select id="arch">
+              <option value="mha">MHA — full KV cache</option>
+              <option value="gqa" selected>GQA — grouped KV</option>
+              <option value="mla">MLA — latent KV</option>
+              <option value="ssm">SSM / Mamba — no KV</option>
+            </select>
+            <div class="hint" id="archHint"></div>
+          </div>
+          <div>
+            <label>Model type</label>
+            <select id="mtype">
+              <option value="regular">Regular LLM</option>
+              <option value="reasoning">Reasoning / Agentic</option>
+            </select>
+            <div class="hint" id="mtypeHint"></div>
+          </div>
+        </div>
+
+        <!-- activity-specific PRIMARY field -->
+        <div id="grpTokens">
+          <label>Tokens per parameter <span class="pill" id="ratioInfo">Chinchilla=20</span></label>
+          <input type="number" id="ratio" value="20" min="1">
+        </div>
+        <div id="grpSft" style="display:none">
+          <label>Dataset size (million tokens)</label>
+          <input type="number" id="sftTokens" value="50">
+        </div>
+        <div id="grpLora" style="display:none">
+          <div class="row">
+            <div>
+              <label>Mode</label>
+              <select id="loraBase">
+                <option value="int4" selected>QLoRA (4-bit base)</option>
+                <option value="bf16">LoRA (BF16 base)</option>
+              </select>
+            </div>
+            <div><label>Dataset (M tokens)</label><input type="number" id="loraTokens" value="50"></div>
+          </div>
+        </div>
+        <div id="grpRl" style="display:none">
+          <div class="row">
+            <div>
+              <label>Reward</label>
+              <select id="rlReward">
+                <option value="rule" selected>Rule-based (no reward model)</option>
+                <option value="model">Reward model</option>
+              </select>
+            </div>
+            <div><label>Rollouts / prompt (G)</label><input type="number" id="rlG" value="8"></div>
+          </div>
+        </div>
+        <div id="grpInfer" style="display:none">
+          <div class="row">
+            <div>
+              <label>Precision</label>
+              <select id="iprec">
+                <option value="int8" selected>8-bit (INT8/FP8)</option>
+                <option value="bf16">16-bit (BF16)</option>
+                <option value="int4">4-bit (INT4/FP4)</option>
+              </select>
+            </div>
+            <div><label>Concurrent requests (batch)</label><input type="number" id="iBatch" value="1"></div>
+          </div>
+          <div class="row">
+            <div><label>Prompt length (for TTFT)</label><input type="number" id="promptLen" value="2048"></div>
+            <div></div>
+          </div>
+        </div>
+
+        <!-- visible compute config -->
+        <div class="row" id="grpCompute">
+          <div id="batchCell"><label>Micro-batch size <span class="pill" id="effBLab"></span></label><input type="number" id="batch" value="8"></div>
+          <div><label>Sequence / context length</label><input type="number" id="seq" value="4096"></div>
+        </div>
+
+        <!-- ADVANCED scenario options -->
+        <details class="adv" id="scAdv">
+          <summary>Advanced scenario options</summary>
+          <div class="row" id="advTrain1">
+            <div id="gaCell"><label>Gradient accumulation</label><input type="number" id="gradAccum" value="1" min="1"></div>
+            <div><label>Active params % <span class="pill">MoE</span></label><input type="number" id="activePct" value="100" min="1" max="100"></div>
+          </div>
+          <div class="row" id="advTrain2">
+            <div id="optimCell"><label>Optimizer</label><select id="optim"><option value="adamw" selected>AdamW — 16 B/param</option><option value="adam8bit">8-bit Adam — 10 B/param</option><option value="sgd">SGD+momentum — 8 B/param</option></select></div>
+            <div id="ckptCell"><label>Activation checkpointing</label><select id="ckpt"><option value="on" selected>On — less memory</option><option value="off">Off — faster</option></select></div>
+          </div>
+          <div id="advPretrain">
+            <label>Training precision</label>
+            <select id="tprec"><option value="bf16" selected>BF16</option><option value="fp8">FP8</option><option value="fp4">FP4</option></select>
+          </div>
+          <div id="advFt" style="display:none">
+            <label>Epochs over dataset</label><input type="number" id="epochs" value="3" min="1">
+          </div>
+          <div id="advLora" style="display:none">
+            <label>LoRA rank (r)</label><input type="number" id="loraR" value="16">
+          </div>
+          <div id="advRl" style="display:none">
+            <div class="row">
+              <div><label>Policy training</label><select id="rlTrain"><option value="lora" selected>LoRA</option><option value="full">Full-param</option></select></div>
+              <div><label>Prompt batch</label><input type="number" id="rlPB" value="8"></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <!-- RIGHT: OUTPUT -->
+    <div>
+      <div class="card">
+        <div class="outtabs" id="outTabs">
+          <button data-out="results" class="active">Results</button>
+          <button data-out="compare">Compare<span class="tabbadge" id="cmpBadge"></span></button>
+          <button data-out="sweet">Sweet spot</button>
+        </div>
+
+        <!-- RESULTS PANEL -->
+        <div id="panelResults">
+          <div id="verdict" class="verdict hero good"></div>
+          <div class="results" id="metrics"></div>
+          <div class="resbar">
+            <span class="muted-sm" id="outTitle"></span>
+            <span style="margin-left:auto"></span>
+            <label class="toggle"><input type="checkbox" id="allMath"> show math</label>
+            <button class="btn" id="pinBtn">📌 Pin</button>
+            <button class="btn ghost" id="resetBtn">Reset</button>
+          </div>
+          <div id="memBlock">
+            <label style="margin-top:0">Memory budget <span id="memUseLab" class="pill"></span></label>
+            <div class="membar" id="membar"></div>
+            <div class="memlegend" id="memlegend"></div>
+          </div>
+          <div id="extra"></div>
+        </div>
+
+        <!-- COMPARE PANEL -->
+        <div id="panelCompare" style="display:none">
+          <div id="cmpBody"><div class="empty">Pin two or more configs (📌 Pin, on the Results tab) to compare them side by side — e.g. MHA vs MLA, or 350M vs 1B.</div></div>
+          <div class="btnrow" id="cmpActions" style="display:none;margin:14px 0 0"><button class="btn ghost" id="clearCmp">Clear all</button></div>
+          <span id="cmpCount" style="display:none"></span>
+        </div>
+
+        <!-- SWEET-SPOT PANEL -->
+        <div id="panelSweet" style="display:none">
+          <h2 id="sweetTitle" style="margin-bottom:14px">🎯 Sweet-spot finder</h2>
+          <div id="budWrap">
+            <label>Time budget per training run <span id="budLab" class="pill">2 days</span></label>
+            <input type="range" id="budget" min="0.25" max="30" step="0.25" value="2">
+          </div>
+          <div id="tpsWrap" style="display:none">
+            <label>Target decode speed <span id="tpsLab" class="pill">15 tok/s</span></label>
+            <input type="range" id="tpsTarget" min="2" max="60" step="1" value="15">
+          </div>
+          <div id="sweetOut" style="margin-top:14px"></div>
+        </div>
+      </div>
+
+      <details class="foot-d">
+        <summary>How this tool works (the 3 bottlenecks)</summary>
+        <div class="body">
+          <p><b>Pre-training is compute-bound.</b> Wall-clock time scales with total FLOPs <code>C = 6·N·D</code> (N params, D tokens; the 6 = 2 forward + 4 backward per param-token). The lever is model size.</p>
+          <p><b>Fine-tuning &amp; RL are memory-bound.</b> Full training holds ~16 bytes/param (weights + grads + FP32 Adam states). RL is worst: it keeps the policy, a frozen reference, an optional reward model, and a large rollout KV cache in memory at once.</p>
+          <p><b>Inference is bandwidth-bound.</b> At batch 1, decode speed ≈ <code>(bandwidth × util) / weight_bytes</code> — every token must drag all weights across the 273 GB/s bus. Architecture (GQA/MLA/SSM) mainly shrinks the KV cache, not the weight traffic.</p>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="foot">
+    Open planning aid — order-of-magnitude estimates; validate with a short profiling run before a multi-day job. Compute uses <code>C≈6·N·D</code>; memory uses standard mixed-precision Adam accounting. Hardware figures: 128 GB unified memory, 273 GB/s bandwidth, BF16 tensor ~213 TFLOPS, FP4 dense ~427 TFLOPS (measured GB10, NVIDIA Developer Forums, Nov 2025). Not affiliated with NVIDIA.
+  </div>
+</div>
+
+<script>
+// ---------- constants ----------
+const BPP = {fp32:4, tf32:4, bf16:2, fp16:2, fp8:1, int8:1, fp4:0.5, int4:0.5};
+const ARCH_KV = {mha:1.0, gqa:0.125, mla:0.06, ssm:0.0};
+const ARCH_NAME = {mha:"MHA", gqa:"GQA", mla:"MLA", ssm:"SSM"};
+const ACT_NAME = {pretrain:"Pre-train", sft:"SFT", lora:"LoRA/QLoRA", grpo:"GRPO/RL", infer:"Inference"};
+const GB=1e9, TFLOP=1e12;
+let ACT="pretrain", pinned=[], pinId=0;
+
+const $=id=>document.getElementById(id);
+const fmtN=n=>n>=1e9?(n/1e9).toFixed(n>=1e10?0:1)+"B":n>=1e6?(n/1e6).toFixed(0)+"M":n>=1e3?(n/1e3).toFixed(0)+"K":n.toFixed(0);
+const fmtTok=n=>n>=1e12?(n/1e12).toFixed(2)+"T":n>=1e9?(n/1e9).toFixed(1)+"B":n>=1e6?(n/1e6).toFixed(0)+"M":fmtN(n);
+const gbStr=b=>(b/GB).toFixed(b/GB<10?1:0)+" GB";
+function timeStr(sec){if(!isFinite(sec)||sec<=0)return "—";const d=sec/86400;if(d>=1)return d.toFixed(d<10?1:0)+" days";const h=sec/3600;if(h>=1)return h.toFixed(1)+" hr";return (sec/60).toFixed(0)+" min";}
+function shape(N){let d=Math.cbrt(N/0.09375);d=Math.max(256,Math.round(d/64)*64);let L=Math.max(2,Math.round(d/128));return {d,L};}
+function kvPerToken(N,arch,bytes){const{d,L}=shape(N);return 2*L*d*bytes*ARCH_KV[arch];}
+
+// ---------- read config ----------
+function readHW(){
+  return {
+    mem:+$("mem").value*GB, bw:+$("bw").value*GB, bwu:+$("bwu").value/100, mfu:+$("mfu").value/100,
+    peak:{bf16:+$("tf_bf16").value,fp16:+$("tf_bf16").value,fp8:+$("tf_fp8").value,fp4:+$("tf_fp4").value,tf32:+$("tf_tf32").value}
+  };
+}
+function readCfg(){
+  const Np=$("Npreset").value;
+  const N=Np==="custom"?Math.max(1,+$("Ncustom").value)*1e6:+Np;
+  return {act:ACT,N,arch:$("arch").value,mtype:$("mtype").value,
+    seq:Math.max(1,+$("seq").value),batch:Math.max(1,+$("batch").value),
+    gradAccum:Math.max(1,+$("gradAccum").value),ckpt:$("ckpt").value,optim:$("optim").value,
+    activePct:Math.min(100,Math.max(1,+$("activePct").value)),epochs:Math.max(1,+$("epochs").value),
+    ratio:Math.max(1,+$("ratio").value),tprec:$("tprec").value,
+    sftTokens:Math.max(1,+$("sftTokens").value),
+    loraBase:$("loraBase").value,loraR:Math.max(1,+$("loraR").value),loraTokens:Math.max(1,+$("loraTokens").value),
+    rlTrain:$("rlTrain").value,rlReward:$("rlReward").value,rlG:Math.max(1,+$("rlG").value),rlPB:Math.max(1,+$("rlPB").value),
+    iprec:$("iprec").value,iBatch:Math.max(1,+$("iBatch").value),promptLen:Math.max(1,+$("promptLen").value)};
+}
+
+// ---------- core: pure compute ----------
+function computeScenario(c,hw){
+  const {mem,bw,bwu,mfu,peak}=hw, N=c.N, arch=c.arch, seq=c.seq, batch=c.batch;
+  const {d,L}=shape(N);
+  const Nact=N*((c.activePct||100)/100), moe=(c.activePct||100)<100;
+  const moeTag=moe?` · MoE ${c.activePct}%`:"";
+  const optMul={adamw:16,adam8bit:10,sgd:8}[c.optim]||16;
+  const optName={adamw:"AdamW",adam8bit:"8-bit Adam",sgd:"SGD+mom"}[c.optim]||"AdamW";
+  const ckptF=c.ckpt==="off"?6:1.5, ckptTxt=c.ckpt==="off"?"off → ~6×":"on → ~1.5×";
+  const gAcc=c.gradAccum||1, effB=batch*gAcc, tokStep=effB*seq;
+  let metrics=[],verdict={cls:"good",html:""},memSegs=[],extra="",used=0,label="";
+
+  if(c.act==="pretrain"){
+    const D=N*c.ratio, eff=peak[c.tprec]*TFLOP*mfu, flops=6*Nact*D, sec=flops/eff;
+    const stateB=optMul*N, actB=batch*seq*d*L*2*ckptF; used=stateB+actB;
+    const tDays=sec/86400, effTF=eff/TFLOP;
+    label=`${fmtN(N)}${moeTag} · ${ARCH_NAME[arch]} · Pre-train ${c.ratio}× · b${effB}`;
+    metrics=[
+      {k:"Tokens needed",v:fmtTok(D),s:c.ratio+"× params",
+       exp:`<span class="eq">D = ratio × N = ${c.ratio} × ${fmtN(N)} = <b>${fmtTok(D)}</b></span>Chinchilla showed ~20 tokens/param is compute-optimal. Modern small models over-train (100–500×) for more quality per parameter.`},
+      {k:"Compute",v:(flops/1e18).toFixed(2)+" EF",s:moe?"6·Nactive·D":"6·N·D FLOPs",
+       exp:`<span class="eq">C = 6 × ${moe?"Nactive":"N"} × D = 6 × ${fmtN(Nact)} × ${fmtTok(D)} = ${(flops/1e18).toFixed(2)}×10¹⁸ FLOPs</span>Factor <code>6</code> = 2 (forward) + 4 (backward) per param·token. ${moe?`MoE: only the ${c.activePct}% active params do work per token, so compute uses Nactive=${fmtN(Nact)}.`:""}`},
+      {k:"Training time",v:timeStr(sec),cls:tDays>14?"bad":tDays>3?"warn":"good",s:"@ "+effTF.toFixed(0)+" TFLOPS",
+       exp:`<span class="eq">t = C / (peak × MFU)</span><span class="eq">= ${(flops/1e18).toFixed(2)}e18 / (${peak[c.tprec]}e12 × ${(mfu*100).toFixed(0)}%) = ${timeStr(sec)}</span>MFU discounts the marketing peak to what training actually sustains. Grad-accum doesn't change total time (same total compute).`},
+      {k:"Tokens / step",v:fmtTok(tokStep),s:`mb ${batch} × acc ${gAcc} × ${fmtTok(seq)}`,
+       exp:`<span class="eq">effective batch = micro-batch × grad-accum = ${batch} × ${gAcc} = ${effB} seqs</span><span class="eq">tokens/step = ${effB} × ${fmtTok(seq)} = ${fmtTok(tokStep)}</span>Gradient accumulation raises the effective batch <b>without</b> raising memory — memory scales with the micro-batch only.`},
+      {k:"Training memory",v:gbStr(used),cls:used>mem?"bad":used>mem*0.9?"warn":"good",s:optName+" + acts",
+       exp:`<span class="eq">M = ${optMul}·N (${optName}) + activations</span><span class="eq">= ${optMul} × ${fmtN(N)} + ${gbStr(actB)} = ${gbStr(used)}</span>Optimizer bytes/param: AdamW 16 (2 weights+2 grad+4 master+8 Adam) · 8-bit Adam 10 · SGD 8. Activations = micro-batch ${batch} × seq × d × L × 2 × ${ckptF} (checkpointing ${ckptTxt}). ${moe?"MoE optimizer states cover all (total) params.":""}`}
+    ];
+    memSegs=[["Weights+grads",4*N,"#76b900"],["Optimizer ("+optName+")",(optMul-4)*N,"#3da5ff"],["Activations",actB,"#f0b429"]];
+    if(used>mem)verdict={cls:"bad",html:`<b>Out of memory.</b> Pre-training ${fmtN(N)} needs ${gbStr(used)} > ${gbStr(mem)}. Lower micro-batch, keep checkpointing on, switch to 8-bit Adam, or train a smaller model.`};
+    else if(tDays>14)verdict={cls:"bad",html:`<b>Too slow — weeks per run.</b> ${timeStr(sec)} kills iteration speed. Drop to ≤500M params or fewer tokens.`};
+    else if(tDays>3)verdict={cls:"warn",html:`<b>Feasible but slow.</b> ${timeStr(sec)} per run — fine for a final model, painful for sweeps.`};
+    else verdict={cls:"good",html:`<b>Sweet spot.</b> ${fmtN(N)} on ${fmtTok(D)} tokens finishes in ${timeStr(sec)} — fast enough to iterate and publish.`};
+  }
+
+  else if(c.act==="sft"){
+    const D=c.sftTokens*1e6*c.epochs, eff=peak.bf16*TFLOP*mfu, sec=6*Nact*D/eff;
+    const stateB=optMul*N, actB=batch*seq*d*L*2*ckptF; used=stateB+actB;
+    label=`${fmtN(N)}${moeTag} · Full SFT · ${fmtTok(D)} · b${effB}`;
+    metrics=[
+      {k:"Tokens",v:fmtTok(D),s:c.epochs+"× epochs",exp:`<span class="eq">D = dataset × epochs = ${c.sftTokens}M × ${c.epochs} = ${fmtTok(D)}</span>Instruction/SFT sets are small; multiple epochs are common. Compute is rarely the limit.`},
+      {k:"Compute time",v:timeStr(sec),cls:sec/86400>3?"warn":"good",s:"often mins–hrs",
+       exp:`<span class="eq">t = 6·${moe?"Nactive":"N"}·D / (peak×MFU) = 6 × ${fmtN(Nact)} × ${fmtTok(D)} / ${(eff/TFLOP).toFixed(0)}e12 = ${timeStr(sec)}</span>`},
+      {k:"Full-FT memory",v:gbStr(used),cls:used>mem?"bad":used>mem*0.9?"warn":"good",s:optName+" + acts",
+       exp:`<span class="eq">M = ${optMul}·N (${optName}) + acts = ${optMul} × ${fmtN(N)} + ${gbStr(actB)} = ${gbStr(used)}</span>Full fine-tuning is as memory-hungry as pre-training. Activations: micro-batch ${batch} × seq × d × L × 2 × ${ckptF}.`},
+      {k:"Max full-FT size",v:fmtN(mem*0.85/optMul),s:"with "+optName,
+       exp:`<span class="eq">N_max = 0.85 × mem / ${optMul} = 0.85 × ${gbStr(mem)} / ${optMul} B = ${fmtN(mem*0.85/optMul)}</span>8-bit Adam / SGD raise this ceiling; above it, use LoRA/QLoRA.`}
+    ];
+    memSegs=[["Weights+grads",4*N,"#76b900"],["Optimizer ("+optName+")",(optMul-4)*N,"#3da5ff"],["Activations",actB,"#f0b429"]];
+    if(used>mem)verdict={cls:"bad",html:`<b>OOM for full SFT.</b> ${fmtN(N)} needs ${gbStr(used)}. Try 8-bit Adam, lower micro-batch, or the LoRA/QLoRA tab (fits 5–10× larger).`};
+    else verdict={cls:"good",html:`<b>Full SFT fits.</b> ${gbStr(used)} used; compute is cheap (${timeStr(sec)}). You're memory-bound, not time-bound.`};
+  }
+
+  else if(c.act==="lora"){
+    const baseP=c.loraBase, r=c.loraR, D=c.loraTokens*1e6*c.epochs;
+    const lact=c.ckpt==="off"?4:1.2;
+    const baseB=N*BPP[baseP], adapterParams=2*2*r*d*L, adapterStateB=adapterParams*16, actB=batch*seq*d*L*2*lact;
+    used=baseB+adapterStateB+actB;
+    const eff=peak.bf16*TFLOP*mfu, sec=4*Nact*D/eff; // ~4ND: fwd + activation-grad backward, frozen weights skip weight-grad
+    label=`${fmtN(N)}${moeTag} · ${baseP==="int4"?"QLoRA":"LoRA"} r${r} · b${effB}`;
+    metrics=[
+      {k:baseP==="int4"?"QLoRA memory":"LoRA memory",v:gbStr(used),cls:used>mem?"bad":used>mem*0.9?"warn":"good",s:"base + adapters",
+       exp:`<span class="eq">M = base + adapters + acts</span><span class="eq">= ${gbStr(baseB)} + ${gbStr(adapterStateB)} + ${gbStr(actB)} = ${gbStr(used)}</span>Base frozen at ${baseP} = ${BPP[baseP]} B/param (QLoRA stores it 4-bit). Only adapters carry optimizer states. Activations scale with micro-batch ${batch} (×${lact}, checkpointing ${c.ckpt}).`},
+      {k:"Trainable params",v:fmtN(adapterParams),s:(adapterParams/N*100).toFixed(2)+"% of model",
+       exp:`<span class="eq">≈ 2 (Q,V) × 2 (A,B) × r × d × L = 4 × ${r} × ${d} × ${L} = ${fmtN(adapterParams)}</span>Low-rank adapters on the attention projections; the frozen base contributes 0 trainable params.`},
+      {k:"Compute time",v:timeStr(sec),cls:"good",s:c.epochs+"× epochs, r="+r,
+       exp:`<span class="eq">t ≈ 4·${moe?"Nactive":"N"}·D / (peak×MFU) = 4 × ${fmtN(Nact)} × ${fmtTok(D)} / ${(eff/TFLOP).toFixed(0)}e12 = ${timeStr(sec)}</span>~4·N·D (not 6) — backprop activations through the frozen base, but skip frozen weight-gradients.`},
+      {k:"Headroom",v:gbStr(Math.max(0,mem-used)),s:"free memory",
+       exp:`<span class="eq">free = mem − used = ${gbStr(mem)} − ${gbStr(used)} = ${gbStr(Math.max(0,mem-used))}</span>Spare capacity for longer context or bigger micro-batch.`}
+    ];
+    memSegs=[["Frozen base",baseB,"#76b900"],["Adapters+opt",adapterStateB,"#3da5ff"],["Activations",actB,"#f0b429"]];
+    if(used>mem)verdict={cls:"bad",html:`<b>OOM.</b> Even ${baseP==="int4"?"QLoRA":"LoRA"} on ${fmtN(N)} needs ${gbStr(used)}. Use 4-bit base, lower micro-batch, or a smaller model.`};
+    else verdict={cls:"good",html:`<b>Comfortable.</b> ${baseP==="int4"?"QLoRA":"LoRA"} on ${fmtN(N)} uses only ${gbStr(used)} — you can fine-tune up to ~${fmtN((mem*0.8)/BPP[baseP])} models this way.`};
+  }
+
+  else if(c.act==="grpo"){
+    const G=c.rlG, PB=c.rlPB, genLen=c.mtype==="reasoning"?seq*3:seq;
+    const policyB=c.rlTrain==="full"?optMul*N:N*0.5+2*2*16*d*L*16;
+    const refB=N*2, rewardB=c.rlReward==="model"?N*2:0;
+    const kvB=kvPerToken(N,arch,2)*genLen*G*PB, actB=PB*seq*d*L*2*(c.ckpt==="off"?4:1.2);
+    used=policyB+refB+rewardB+kvB+actB;
+    label=`${fmtN(N)} · ${ARCH_NAME[arch]} · GRPO G${G} · ${c.rlReward==="rule"?"rule":"RM"}`;
+    metrics=[
+      {k:"Total RL memory",v:gbStr(used),cls:used>mem?"bad":used>mem*0.9?"warn":"good",s:c.rlTrain+" + "+c.rlReward,
+       exp:`<span class="eq">M = policy + reference + reward + rolloutKV + acts</span><span class="eq">= ${gbStr(policyB)} + ${gbStr(refB)} + ${gbStr(rewardB)} + ${gbStr(kvB)} + ${gbStr(actB)}</span><span class="eq">= ${gbStr(used)}</span>RL holds 3–4 model copies at once — that's why it OOMs where SFT fits.`},
+      {k:"Rollout KV cache",v:gbStr(kvB),cls:kvB>mem*0.5?"warn":"good",s:ARCH_NAME[arch]+", G="+G,
+       exp:`<span class="eq">KV = 2·L·d·2B · archFactor · genLen · G · promptBatch</span><span class="eq">= (per-token ${gbStr(kvPerToken(N,arch,2))}) × ${fmtTok(genLen)} × ${G} × ${PB} = ${gbStr(kvB)}</span>archFactor: MHA 1.0 · GQA 0.125 · MLA 0.06 · SSM 0 (no KV cache).`},
+      {k:"Reference + reward",v:gbStr(refB+rewardB),s:c.rlReward==="rule"?"no reward model":"reward model loaded",
+       exp:`<span class="eq">= reference(2·N) + reward = ${gbStr(refB)} + ${gbStr(rewardB)}</span>Rule-based / verifiable rewards remove the reward model entirely, saving ${gbStr(N*2)}.`},
+      {k:"Generation length",v:fmtTok(genLen),s:c.mtype==="reasoning"?"long CoT (3× context)":"standard",
+       exp:`Reasoning/agentic models emit long chains of thought — modeled here as 3× the context length = ${fmtTok(genLen)}, which inflates the rollout KV cache linearly. Regular models generate ~the set context length (${fmtTok(seq)}). Switch Model type to see this move.`}
+    ];
+    memSegs=[["Policy",policyB,"#76b900"],["Reference",refB,"#3da5ff"],["Reward",rewardB,"#b06bff"],["Rollout KV",kvB,"#f0b429"],["Activations",actB,"#ef5350"]];
+    extra=`<table><tr><th>Model copy in memory</th><th class="num">Size</th></tr>
+      <tr><td>Policy (${c.rlTrain})</td><td class="num">${gbStr(policyB)}</td></tr>
+      <tr><td>Frozen reference</td><td class="num">${gbStr(refB)}</td></tr>
+      <tr><td>Reward (${c.rlReward})</td><td class="num">${gbStr(rewardB)}</td></tr>
+      <tr><td>Rollout KV (${G}×${PB})</td><td class="num">${gbStr(kvB)}</td></tr></table>`;
+    if(used>mem){const tip=arch==="mha"?"Switch to GQA/MLA to shrink the KV cache":"Lower G or use rule-based rewards";
+      verdict={cls:"bad",html:`<b>OOM — RL is the memory killer.</b> ${gbStr(used)} needed. ${tip}.`};}
+    else if(used>mem*0.8)verdict={cls:"warn",html:`<b>Tight but runs.</b> ${gbStr(used)} of ${gbStr(mem)} — little room to grow batches.`};
+    else verdict={cls:"good",html:`<b>Fits.</b> GRPO on ${fmtN(N)} uses ${gbStr(used)}. ${arch==="ssm"?"SSM eliminates the KV cache — ideal for long rollouts.":arch!=="mha"?ARCH_NAME[arch]+" keeps the rollout KV small.":"MHA's KV cache is the term to watch."}`};
+  }
+
+  else if(c.act==="infer"){
+    const iprec=c.iprec, B=c.iBatch, P=c.promptLen, wB=N*BPP[iprec], wActB=Nact*BPP[iprec], kvB=kvPerToken(N,arch,2)*seq*B;
+    used=wB+kvB;
+    const effBW=bw*bwu;
+    const compPeak=({int8:peak.fp8,bf16:peak.bf16,int4:peak.fp4}[iprec]||peak.bf16)*TFLOP*mfu; // effective compute for this precision
+    // decode step: stream active weights once (amortized over B), OR compute 2·Nact·B FLOPs — whichever is slower
+    const wReadT=wActB/effBW, compT=2*Nact*B/compPeak, stepT=Math.max(wReadT,compT);
+    const perReq=1/stepT, aggr=B/stepT;
+    const bound=compT>wReadT?"compute-bound":"bandwidth-bound";
+    const ttft=2*Nact*P/compPeak; // prefill is compute-bound: 2·Nactive·promptTokens
+    label=`${fmtN(N)}${moeTag} · ${ARCH_NAME[arch]} · ${iprec} infer · B${B}`;
+    metrics=[
+      {k:"Decode speed",v:perReq.toFixed(perReq<10?1:0)+" tok/s",cls:perReq>20?"good":perReq>5?"warn":"bad",s:"per request, B="+B,
+       exp:`<span class="eq">per-request tok/s = 1 / step_time</span><span class="eq">step = max(weight-read ${(wReadT*1000).toFixed(1)}ms, compute ${(compT*1000).toFixed(1)}ms) = ${(stepT*1000).toFixed(1)}ms</span>At B=1 this is bandwidth-bound: (BW×util)/${moe?"active ":""}weights = (${(bw/GB).toFixed(0)}×${(bwu*100).toFixed(0)}%)/${gbStr(wActB)}. ${moe?`MoE reads only ${c.activePct}% active experts.`:""}`},
+      {k:"Throughput",v:aggr.toFixed(aggr<10?1:0)+" tok/s",cls:"good",s:"all "+B+" reqs · "+bound,
+       exp:`<span class="eq">aggregate = B / step_time = ${B} / ${(stepT*1000).toFixed(1)}ms = ${aggr.toFixed(1)} tok/s</span>Batching amortizes the one weight-read across B requests, so throughput scales ~linearly until compute saturates (here: <b>${bound}</b>). Plateau ≈ peak/(2·Nactive) = ${(compPeak/(2*Nact)).toFixed(0)} tok/s.`},
+      {k:"Time to first token",v:ttft<1?(ttft*1000).toFixed(0)+" ms":ttft.toFixed(2)+" s",cls:ttft>2?"warn":"good",s:fmtTok(P)+" prompt",
+       exp:`<span class="eq">TTFT ≈ prefill = 2·${moe?"Nactive":"N"}·prompt / (peak×util)</span><span class="eq">= 2 × ${fmtN(Nact)} × ${fmtTok(P)} / ${(compPeak/TFLOP).toFixed(0)}e12 = ${ttft<1?(ttft*1000).toFixed(0)+" ms":ttft.toFixed(2)+" s"}</span>Prefill is compute-bound (one big parallel matmul over the prompt) — unlike decode. Long agent prompts/contexts dominate latency.`},
+      {k:"Model memory",v:gbStr(wB),cls:used>mem?"bad":"good",s:moe?"all experts, "+iprec:iprec+" weights",
+       exp:`<span class="eq">= N(total) × bytes/param = ${fmtN(N)} × ${BPP[iprec]} B = ${gbStr(wB)}</span>${moe?"MoE holds ALL experts in memory even though decode uses only the active ones.":""}`},
+      {k:"KV cache",v:gbStr(kvB),s:ARCH_NAME[arch]+" @ "+fmtTok(seq)+"×"+B,
+       exp:`<span class="eq">= 2·L·d·2B · archFactor(${ARCH_KV[arch]}) × seq × batch</span><span class="eq">= ${gbStr(kvPerToken(N,arch,2))}/tok × ${fmtTok(seq)} × ${B} = ${gbStr(kvB)}</span>Grows with concurrent requests — the hidden cost of batching.`},
+      {k:"Total VRAM",v:gbStr(used),cls:used>mem?"bad":used>mem*0.9?"warn":"good",s:"of "+gbStr(mem),
+       exp:`<span class="eq">= weights + KV = ${gbStr(wB)} + ${gbStr(kvB)} = ${gbStr(used)}</span>`}
+    ];
+    memSegs=[["Weights",wB,"#76b900"],["KV cache",kvB,"#f0b429"],["Free",Math.max(0,mem-used),"#1a2030"]];
+    if(used>mem)verdict={cls:"bad",html:`<b>Won't load.</b> ${fmtN(N)} at ${iprec} (B=${B}) needs ${gbStr(used)} > ${gbStr(mem)}. Quantize further, shrink context, or lower concurrency.`};
+    else if(perReq<5)verdict={cls:"warn",html:`<b>Loads but slow.</b> ${perReq.toFixed(1)} tok/s per request (${bound}). Aggregate ${aggr.toFixed(0)} tok/s across ${B}. A smaller/more-quantized model speeds decode; batching raises total throughput.`};
+    else verdict={cls:"good",html:`<b>Usable.</b> ${perReq.toFixed(0)} tok/s/request, ${aggr.toFixed(0)} tok/s aggregate, TTFT ${ttft<1?(ttft*1000).toFixed(0)+"ms":ttft.toFixed(2)+"s"} — using ${gbStr(used)}.`};
+  }
+
+  return {metrics,verdict,memSegs,used,mem,extra,label};
+}
+
+// ---------- render ----------
+function render(){
+  const hw=readHW(), c=readCfg(), R=computeScenario(c,hw);
+  $("bwuLab").textContent=$("bwu").value+"%"; $("mfuLab").textContent=$("mfu").value+"%";
+  $("ratioInfo").textContent = c.ratio===20?"Chinchilla=20":"over-train "+c.ratio+"×";
+  $("effBLab").textContent = c.gradAccum>1?("eff "+(c.batch*c.gradAccum)):"";
+  // only the meaningful relevance hints (suppress routine noise)
+  const archHints={grpo:"Biggest RL memory lever.",pretrain:"⚠ Affects Inference & RL, not training.",sft:"⚠ Affects Inference & RL, not training.",lora:"⚠ Affects Inference & RL, not training."};
+  const mtypeHints={grpo:"Reasoning = 3× longer rollouts."};
+  $("archHint").textContent=archHints[ACT]||"";
+  $("mtypeHint").textContent=mtypeHints[ACT]||"";
+  // hw summary
+  const effTF=(hw.peak.bf16*hw.mfu).toFixed(0);
+  $("hwsum").innerHTML=`<b>${(hw.mem/GB).toFixed(0)} GB</b> memory · <b>${(hw.bw/GB).toFixed(0)} GB/s</b> bandwidth<br><b>${effTF} TFLOPS</b> effective training (BF16 × ${(hw.mfu*100).toFixed(0)}% MFU)`;
+
+  const showAll=$("allMath").checked;
+  $("metrics").innerHTML=R.metrics.map(m=>`<div class="metric"><div class="k">${m.k}</div><div class="v ${m.cls||''}">${m.v}</div><div class="s">${m.s||''}</div>${(m.exp&&showAll)?`<div class="mathbox">${m.exp}</div>`:''}</div>`).join("");
+
+  const vd=$("verdict"); vd.className="verdict hero "+R.verdict.cls; vd.innerHTML=R.verdict.html;
+
+  // memory bar
+  const total=Math.max(R.mem,R.used,1);
+  $("memUseLab").textContent=gbStr(R.used)+" / "+gbStr(R.mem)+" ("+(R.used/R.mem*100).toFixed(0)+"%)";
+  const bar=$("membar"); bar.innerHTML=""; let drawn=0;
+  R.memSegs.forEach(([name,b,color])=>{if(b<=0)return;const pct=b/total*100;drawn+=b;
+    const div=document.createElement("div");div.className="seg-b";div.style.width=pct+"%";div.style.background=color;div.title=name+": "+gbStr(b);
+    if(pct>9)div.textContent=name.length>12&&pct<18?gbStr(b):name;bar.appendChild(div);});
+  if(R.mem>drawn && c.act!=="infer"){const free=R.mem-drawn;const div=document.createElement("div");
+    div.className="seg-b";div.style.width=free/total*100+"%";div.style.background="#1a2030";div.style.color="#8b94a7";
+    div.textContent=free/total>0.12?"free":"";bar.appendChild(div);}
+  $("memlegend").innerHTML=R.memSegs.filter(s=>s[1]>0).map(([n,b,col])=>`<span><i class="dot" style="background:${col}"></i>${n} ${gbStr(b)}</span>`).join("");
+  $("extra").innerHTML=R.extra;
+
+  sweetSpot(hw);
+}
+
+// largest N that keeps memory under `cap`, given current scenario settings
+function maxNbyMem(cfgBase,hw,cap){
+  let lo=1e6, hi=2e12;
+  for(let i=0;i<44;i++){
+    const mid=Math.sqrt(lo*hi);
+    const used=computeScenario(Object.assign({},cfgBase,{N:mid}),hw).used;
+    if(used<=cap) lo=mid; else hi=mid;
+  }
+  return lo;
+}
+
+// ---------- sweet spot (scenario-aware) ----------
+function sweetSpot(hw){
+  const cfg=readCfg();
+  // toggle which slider is relevant
+  $("budWrap").style.display = ACT==="pretrain" ? "" : "none";
+  $("tpsWrap").style.display = ACT==="infer" ? "" : "none";
+  const titles={pretrain:"🎯 Sweet spot — how big can I pre-train?",sft:"🎯 Sweet spot — biggest model I can full fine-tune",lora:"🎯 Sweet spot — biggest model I can LoRA",grpo:"🎯 Sweet spot — biggest model I can RL-align",infer:"🎯 Sweet spot — biggest model I can serve"};
+  $("sweetTitle").textContent=titles[ACT];
+
+  // ===== PRE-TRAINING: time-budget bound =====
+  if(ACT==="pretrain"){
+    const days=+$("budget").value;
+    $("budLab").textContent=days<1?(days*24).toFixed(0)+" hr":days+" day"+(days>1?"s":"");
+    const sec=days*86400, eff=hw.peak.bf16*TFLOP*hw.mfu;
+    const Ntime=Math.sqrt(eff*sec/120), Nmem=hw.mem*0.85/16, Nfeas=Math.min(Ntime,Nmem);
+    const Dopt=20*Nfeas, Nover=Math.min(Math.sqrt(eff*sec/600),Nmem);
+    const bound=Ntime<Nmem?'<span class="badge">time-bound</span>':'<span class="badge">memory-bound</span>';
+    $("sweetOut").innerHTML=`<div class="results" style="margin:0 0 10px">
+      <div class="metric"><div class="k">Max pre-trainable ${bound}</div><div class="v good">${fmtN(Nfeas)}</div><div class="s">Chinchilla-optimal in ${days<1?(days*24).toFixed(0)+"h":days+"d"}</div></div>
+      <div class="metric"><div class="k">Tokens to train it</div><div class="v">${fmtTok(Dopt)}</div><div class="s">20× params</div></div>
+      <div class="metric"><div class="k">If over-trained 100×</div><div class="v">${fmtN(Nover)}</div><div class="s">better quality/param</div></div>
+    </div><div class="hint">Time-bound: N=√(eff·t/120), eff=${(eff/TFLOP).toFixed(0)} TFLOPS (BF16 × ${(hw.mfu*100).toFixed(0)}% MFU). Memory cap for full training ≈ ${fmtN(Nmem)} params (${gbStr(hw.mem)} ÷ 16 B). Smaller wins.</div>`;
+    return;
+  }
+
+  // ===== INFERENCE: speed + memory bound =====
+  if(ACT==="infer"){
+    const T=+$("tpsTarget").value; $("tpsLab").textContent=T+" tok/s";
+    const effBW=hw.bw*hw.bwu, Nspeed=effBW/(T*BPP[cfg.iprec]);
+    const Nmem=maxNbyMem(cfg,hw,hw.mem*0.92);
+    const Nfeas=Math.min(Nspeed,Nmem);
+    const achieved=effBW/(Nfeas*BPP[cfg.iprec]);
+    const bound=Nspeed<Nmem?'<span class="badge">speed-bound</span>':'<span class="badge">memory-bound</span>';
+    $("sweetOut").innerHTML=`<div class="results" style="margin:0 0 10px">
+      <div class="metric"><div class="k">Max servable ${bound}</div><div class="v good">${fmtN(Nfeas)}</div><div class="s">${cfg.iprec} @ ≥${T} tok/s</div></div>
+      <div class="metric"><div class="k">At this speed only</div><div class="v">${fmtN(Nspeed)}</div><div class="s">ignoring memory</div></div>
+      <div class="metric"><div class="k">Largest that fits memory</div><div class="v">${fmtN(Nmem)}</div><div class="s">incl. KV @ ${fmtTok(cfg.seq)}</div></div>
+    </div><div class="hint">Speed bound: N = (BW×util)/(target×bytes) = ${(effBW/GB).toFixed(0)}GB/s ÷ (${T} × ${BPP[cfg.iprec]}B) = ${fmtN(Nspeed)}. Memory bound found by search at ${cfg.iprec}, ${ARCH_NAME[cfg.arch]}, seq ${fmtTok(cfg.seq)}, ${cfg.iBatch}× concurrent. Pick the smaller.</div>`;
+    return;
+  }
+
+  // ===== SFT / LoRA / GRPO: memory bound =====
+  const Nfit=maxNbyMem(cfg,hw,hw.mem*0.92);
+  let cards="",note="";
+  if(ACT==="sft"){
+    const Nlora=hw.mem*0.8/0.5; // QLoRA reach for comparison
+    cards=`<div class="metric"><div class="k">Max full fine-tune <span class="badge">memory-bound</span></div><div class="v good">${fmtN(Nfit)}</div><div class="s">~16 B/param fits ${gbStr(hw.mem)}</div></div>
+      <div class="metric"><div class="k">vs QLoRA reach</div><div class="v">${fmtN(Nlora)}</div><div class="s">~${(Nlora/Nfit).toFixed(0)}× bigger via 4-bit LoRA</div></div>`;
+    note=`Full SFT stores 16 B/param. Need a bigger base? The LoRA/QLoRA tab reaches ~${(Nlora/Nfit).toFixed(0)}× larger. Compute time depends on dataset size (set in scenario).`;
+  } else if(ACT==="lora"){
+    const other=cfg.loraBase==="int4"?"BF16 LoRA":"4-bit QLoRA";
+    const Nother=maxNbyMem(Object.assign({},cfg,{loraBase:cfg.loraBase==="int4"?"bf16":"int4"}),hw,hw.mem*0.92);
+    cards=`<div class="metric"><div class="k">Max ${cfg.loraBase==="int4"?"QLoRA":"LoRA"} <span class="badge">memory-bound</span></div><div class="v good">${fmtN(Nfit)}</div><div class="s">r=${cfg.loraR}, seq ${fmtTok(cfg.seq)}</div></div>
+      <div class="metric"><div class="k">vs ${other}</div><div class="v">${fmtN(Nother)}</div><div class="s">switch base precision</div></div>`;
+    note=`Frozen base dominates memory. 4-bit (QLoRA) roughly quadruples the size you can fit vs BF16 LoRA. Found by search at r=${cfg.loraR}, seq ${fmtTok(cfg.seq)}.`;
+  } else if(ACT==="grpo"){
+    const Nrule=maxNbyMem(Object.assign({},cfg,{rlReward:"rule"}),hw,hw.mem*0.92);
+    const Nssm=maxNbyMem(Object.assign({},cfg,{arch:"ssm"}),hw,hw.mem*0.92);
+    cards=`<div class="metric"><div class="k">Max RL model <span class="badge">memory-bound</span></div><div class="v good">${fmtN(Nfit)}</div><div class="s">${ARCH_NAME[cfg.arch]}, G=${cfg.rlG}, ${cfg.rlReward}</div></div>
+      <div class="metric"><div class="k">If rule-based reward</div><div class="v">${fmtN(Nrule)}</div><div class="s">drop reward model</div></div>
+      <div class="metric"><div class="k">If SSM (no KV)</div><div class="v">${fmtN(Nssm)}</div><div class="s">no rollout KV cache</div></div>`;
+    note=`RL holds policy + reference + reward + rollout KV at once. Rule-based rewards and KV-light architectures (MLA/SSM) are the biggest levers — adjust G, reward, and architecture in the scenario to see them move.`;
+  }
+  $("sweetOut").innerHTML=`<div class="results" style="margin:0 0 10px">${cards}</div><div class="hint">${note}</div>`;
+}
+
+// ---------- comparison ----------
+function renderCompare(){
+  $("cmpBadge").textContent=pinned.length||"";
+  $("cmpActions").style.display=pinned.length?"flex":"none";
+  if(!pinned.length){$("cmpBody").innerHTML='<div class="empty">Pin two or more configs (📌 Pin, on the Results tab) to compare them side by side — e.g. MHA vs MLA, or 350M vs 1B.</div>';return;}
+  const vcol={good:"rgba(118,185,0,.18)",warn:"rgba(240,180,41,.18)",bad:"rgba(239,83,80,.18)"};
+  const vtxt={good:"#76b900",warn:"#f0b429",bad:"#ef5350"};
+  $("cmpBody").innerHTML=`<div class="cmprow">${pinned.map(p=>`
+    <div class="cmpcol">
+      <span class="x" data-del="${p.id}">✕</span>
+      <div class="lab">${p.label}</div>
+      <div class="sub">${ACT_NAME[p.act]}</div>
+      <div class="vtag" style="background:${vcol[p.vcls]};color:${vtxt[p.vcls]}">${p.vcls==="good"?"✓ feasible":p.vcls==="warn"?"△ tight":"✕ infeasible"}</div>
+      ${p.metrics.map(m=>`<div class="cmpmetric"><span class="ck">${m.k}</span><span class="cv ${m.cls||''}" style="${m.cls==='bad'?'color:#ef5350':m.cls==='good'?'color:#76b900':m.cls==='warn'?'color:#f0b429':''}">${m.v}</span></div>`).join("")}
+    </div>`).join("")}</div>`;
+}
+function pinCurrent(){
+  const R=computeScenario(readCfg(),readHW());
+  pinned.push({id:++pinId,label:R.label,act:ACT,vcls:R.verdict.cls,metrics:R.metrics.map(m=>({k:m.k,v:m.v,cls:m.cls}))});
+  if(pinned.length>6)pinned.shift();
+  renderCompare();
+  showOut("compare");
+}
+function showOut(which){
+  document.querySelectorAll("#outTabs button").forEach(b=>b.classList.toggle("active",b.dataset.out===which));
+  $("panelResults").style.display=which==="results"?"":"none";
+  $("panelCompare").style.display=which==="compare"?"":"none";
+  $("panelSweet").style.display=which==="sweet"?"":"none";
+}
+
+// ---------- UI wiring ----------
+function showGroups(){
+  const map={grpTokens:["pretrain"],grpSft:["sft"],grpLora:["lora"],grpRl:["grpo"],grpInfer:["infer"]};
+  for(const id in map)$(id).style.display=map[id].includes(ACT)?"":"none";
+  const training = ACT==="pretrain"||ACT==="sft"||ACT==="lora";
+  $("advPretrain").style.display=ACT==="pretrain"?"":"none";
+  $("advFt").style.display=(ACT==="sft"||ACT==="lora")?"":"none";
+  $("advLora").style.display=ACT==="lora"?"":"none";
+  $("advRl").style.display=ACT==="grpo"?"":"none";
+  // batch / grad-accum / optimizer / checkpointing apply to local-update training only
+  $("batchCell").style.display=(ACT==="grpo"||ACT==="infer")?"none":"";
+  $("gaCell").style.display=training?"":"none";
+  $("advTrain2").style.display=training?"":"none";
+  $("optimCell").style.display=(ACT==="pretrain"||ACT==="sft")?"":"none";
+  $("ckptCell").style.display=training?"":"none";
+  const titles={pretrain:"Pre-training plan",sft:"Full fine-tuning (SFT)",lora:"LoRA / QLoRA plan",grpo:"GRPO / RL alignment",infer:"Inference deployment"};
+  $("outTitle").textContent=titles[ACT];
+}
+document.querySelectorAll("#actTabs .tab").forEach(t=>t.onclick=()=>{
+  document.querySelectorAll("#actTabs .tab").forEach(x=>x.classList.remove("active"));
+  t.classList.add("active");ACT=t.dataset.act;showGroups();render();
+});
+$("Npreset").onchange=()=>{$("NcustomWrap").style.display=$("Npreset").value==="custom"?"":"none";render();};
+$("preset").onchange=()=>{const v=$("preset").value;
+  if(v==="spark"){$("mem").value=128;$("bw").value=273;$("bwu").value=80;$("mfu").value=35;$("tf_bf16").value=213;$("tf_fp8").value=213;$("tf_fp4").value=427;$("tf_tf32").value=53;}
+  else if(v==="spark_opt"){$("mem").value=128;$("bw").value=273;$("bwu").value=90;$("mfu").value=47;$("tf_bf16").value=213;$("tf_fp8").value=213;$("tf_fp4").value=427;$("tf_tf32").value=53;}
+  render();};
+document.querySelectorAll("#outTabs button").forEach(b=>b.onclick=()=>showOut(b.dataset.out));
+$("allMath").onchange=render;
+$("pinBtn").onclick=pinCurrent;
+$("cmpBody").addEventListener("click",e=>{const x=e.target.closest("[data-del]");if(!x)return;pinned=pinned.filter(p=>p.id!=x.dataset.del);renderCompare();});
+$("clearCmp").onclick=()=>{pinned=[];renderCompare();};
+$("resetBtn").onclick=()=>{location.reload();};
+document.querySelectorAll("input,select").forEach(el=>{el.addEventListener("input",render);el.addEventListener("change",render);});
+showGroups();render();renderCompare();
+</script>
+</body>
+</html>
